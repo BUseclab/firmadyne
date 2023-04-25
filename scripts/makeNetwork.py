@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import sys
 import getopt
@@ -28,8 +28,16 @@ else
     exit 1
 fi
 
+if [ $# -eq 0 ]
+then
+    SYSCALL_NUM=0
+else
+    SYSCALL_NUM=$1
+fi
+
+
 IMAGE=`get_fs ${IID}`
-KERNEL=`get_kernel ${ARCHEND}`
+KERNEL=`get_kernel ${ARCHEND} ${IID}`
 QEMU=`get_qemu ${ARCHEND}`
 QEMU_MACHINE=`get_qemu_machine ${ARCHEND}`
 QEMU_ROOTFS=`get_qemu_disk ${ARCHEND}`
@@ -48,15 +56,17 @@ echo "Starting firmware emulation... use Ctrl-a + x to exit"
 sleep 1s
 
 %(QEMU_ENV_VARS)s ${QEMU} -m 256 -M ${QEMU_MACHINE} -kernel ${KERNEL} \\
-    %(QEMU_DISK)s -append "root=${QEMU_ROOTFS} console=ttyS0 nandsim.parts=64,64,64,64,64,64,64,64,64,64 rdinit=/firmadyne/preInit.sh rw debug ignore_loglevel print-fatal-signals=1 user_debug=31 firmadyne.syscall=0" \\
-    -nographic \\
-    %(QEMU_NETWORK)s | tee ${WORK_DIR}/qemu.final.serial.log
+    %(QEMU_DISK)s -append "root=${QEMU_ROOTFS} rootwait console=%(CONSOLE)s nandsim.parts=64,64,64,64,64,64,64,64,64,64 rdinit=/firmadyne/preInit.sh rw debug ignore_loglevel print-fatal-signals=1 user_debug=31 fdyne_syscall=${SYSCALL_NUM} fdyne_execute=1 fdyne_reboot=1 firmadyne.procfs=1 fdyne_devfs=1  mem=256M" \\
+    -serial file:${WORK_DIR}/qemu.final.serial.log \\
+    -serial unix:/tmp/qemu.${IID}.S1,server,nowait \\
+    %(QEMU_NETWORK)s %(CPU)s
 """
 
 def stripTimestamps(data):
     lines = data.split("\n")
     #throw out the timestamps
-    lines = [re.sub(r"^\[[^\]]*\] firmadyne: ", "", l) for l in lines]
+    linez = [re.sub(r"^\[[^\]]*\] firmadyne: ", "", l) for l in lines]
+    lines = list(map(lambda x:x.replace("firmadyne: ",""),linez))
     return lines
 
 def findMacChanges(data, endianness):
@@ -68,7 +78,7 @@ def findMacChanges(data, endianness):
     result = []
     if endianness == "eb":
         fmt = ">I"
-    elif endianness == "el":
+    elif endianness == "el" or endianness == "elv6" or endianness == "elv7" or endianness == "elv7_2":
         fmt = "<I"
     for c in candidates:
         g = re.match(r"^ioctl_SIOCSIFHWADDR\[[^\]]+\]: dev:([^ ]+) mac:0x([0-9a-f]+) 0x([0-9a-f]+)", c)
@@ -90,7 +100,7 @@ def findNonLoInterfaces(data, endianness):
     result = []
     if endianness == "eb":
         fmt = ">I"
-    elif endianness == "el":
+    elif endianness == "el" or endianness == "elv6" or endianness == "elv7" or endianness == "elv7_2":
         fmt = "<I"
     for c in candidates:
         g = re.match(r"^__inet_insert_ifa\[[^\]]+\]: device:([^ ]+) ifa:0x([0-9a-f]+)", c)
@@ -124,9 +134,11 @@ def findVlanInfoForDev(data, dev):
     results = []
     candidates = filter(lambda l: l.startswith("register_vlan_dev"), lines)
     for c in candidates:
+        print("Here",c, dev)
         g = re.match(r"register_vlan_dev\[[^\]]+\]: dev:%s vlan_id:([0-9]+)" % dev, c)
         if g:
             results.append(int(g.group(1)))
+    print(results)
     return results
 
 def ifaceNo(dev):
@@ -135,19 +147,19 @@ def ifaceNo(dev):
 
 def qemuArchNetworkConfig(i, arch, n):
     if not n:
-        if arch == "arm":
-            return "-device virtio-net-device,netdev=net%(I)i -netdev socket,id=net%(I)i,listen=:200%(I)i" % {'I': i}
-        else:
-            return "-net nic,vlan=%(VLAN)i -net socket,vlan=%(VLAN)i,listen=:200%(I)i" % {'I': i, 'VLAN' : i}
+        #aif arch == "arm":
+         #   return "-device virtio-net-device,netdev=net%(I)i -netdev socket,id=net%(I)i,listen=:200%(I)i" % {'I': i}
+        #else:
+        return "-net nic,vlan=%(VLAN)i -net socket,vlan=%(VLAN)i,listen=:200%(I)i" % {'I': i, 'VLAN' : i}
     else:
         (ip, dev, vlan, mac) = n
          # newer kernels use virtio only
-        if arch == "arm":
-            return "-device virtio-net-device,netdev=net%(I)i -netdev tap,id=net%(I)i,ifname=${TAPDEV_%(I)i},script=no" % {'I': i}
-        else:
-            vlan_id = vlan if vlan else i
-            mac_str = "" if not mac else ",macaddr=%s" % mac
-            return "-net nic,vlan=%(VLAN)i%(MAC)s -net tap,vlan=%(VLAN)i,id=net%(I)i,ifname=${TAPDEV_%(I)i},script=no" % { 'I' : i, 'MAC' : mac_str, 'VLAN' : vlan_id}
+        #if arch == "arm":
+         #   return "-device virtio-net-device,netdev=net%(I)i -netdev tap,id=net%(I)i,ifname=${TAPDEV_%(I)i},script=no" % {'I': i}
+        #else:
+        vlan_id = vlan if vlan else i
+        mac_str = "" if not mac else ",macaddr=%s" % mac
+        return "-net nic,vlan=%(VLAN)i%(MAC)s -net tap,vlan=%(VLAN)i,id=net%(I)i,ifname=${TAPDEV_%(I)i},script=no" % { 'I' : i, 'MAC' : mac_str, 'VLAN' : vlan_id}
 
 def qemuNetworkConfig(arch, network):
     output = []
@@ -216,12 +228,14 @@ sudo tunctl -t ${TAPDEV_%(I)i} -u ${USER}
 echo "Initializing VLAN..."
 HOSTNETDEV_%(I)i=${TAPDEV_%(I)i}.%(VLANID)i
 sudo ip link add link ${TAPDEV_%(I)i} name ${HOSTNETDEV_%(I)i} type vlan id %(VLANID)i
-sudo ip link set ${HOSTNETDEV_%(I)i} up
+sudo ip link set ${TAPDEV_%(I)i} up
+
+sudo ifconfig ${HOSTNETDEV_%(I)i} up
 """
 
     template_2 = """
 echo "Bringing up TAP device..."
-sudo ip link set ${HOSTNETDEV_%(I)i} up
+sudo ip link set ${TAPDEV_%(I)i} up
 sudo ip addr add %(HOSTIP)s/24 dev ${HOSTNETDEV_%(I)i}
 
 echo "Adding route to %(GUESTIP)s..."
@@ -265,13 +279,26 @@ sudo tunctl -d ${TAPDEV_%(I)i}
 
 def qemuCmd(iid, network, arch, endianness):
     if arch == "mips":
+        cpu = '-cpu "34Kf"'
+        console = "ttyS0"
         qemuEnvVars = ""
         qemuDisk = "-drive if=ide,format=raw,file=${IMAGE}"
-        if endianness != "eb" and endianness != "el":
+        trace = "-trace_module 0 -moduleTraceFile ${WORK_DIR}/module_trace_final.out -module_start_addr 0xc0000000 -module_end_addr 0xc1000000"
+        if endianness != "eb" and endianness != "el" and endianness != "elv6" and endianness != "elv7" and endianness != "elv7_2":
             raise Exception("You didn't specify a valid endianness")
     elif arch == "arm":
-        qemuDisk = "-drive if=none,file=${IMAGE},format=raw,id=rootfs -device virtio-blk-device,drive=rootfs"
-        if endianness == "el":
+        if endianness == "elv6":
+            cpu = "-cpu arm11mpcore"
+            qemuDisk = "-drive file=${IMAGE},if=sd"
+        elif endianness == "elv7" or endianness == "elv7_2":
+            cpu = "-cpu cortex-a9"
+            qemuDisk = "-drive file=${IMAGE},if=sd"
+        else:
+            cpu = ""
+            qemuDisk = "-drive file=${IMAGE},if=scsi"
+        console = "ttyAMA0"
+        trace = "-trace_module 0 -moduleTraceFile ${WORK_DIR}/module_trace_final.out -module_start_addr 0xbf000000 -module_end_addr 0xbfffffff"
+        if endianness == "el" or endianness == "elv6" or endianness == "elv7" or endianness == "elv7_2":
             qemuEnvVars = "QEMU_AUDIO_DRV=none"
         elif endianness == "eb":
             raise Exception("armeb currently not supported")
@@ -281,8 +308,10 @@ def qemuCmd(iid, network, arch, endianness):
         raise Exception("Unsupported architecture")
 
     return QEMUCMDTEMPLATE % {'IID': iid,
+                              'CONSOLE' : console,
                               'ARCHEND' : arch + endianness,
                               'START_NET' : startNetwork(network),
+                              'CPU' : cpu,
                               'STOP_NET' : stopNetwork(network),
                               'QEMU_DISK' : qemuDisk,
                               'QEMU_NETWORK' : qemuNetworkConfig(arch, network),
@@ -291,7 +320,7 @@ def qemuCmd(iid, network, arch, endianness):
 def process(infile, iid, arch, endianness=None, makeQemuCmd=False, outfile=None):
     brifs = []
     vlans = []
-    data = open(infile).read()
+    data = open(infile,errors='ignore').read()
     network = set()
     success = False
 
@@ -355,6 +384,12 @@ def archEnd(value):
         arch = "arm"
     if tmp.endswith("el"):
         end = "el"
+    if tmp.endswith("elv6"):
+        end = "elv6"
+    if tmp.endswith("elv7"):
+        end = "elv7"
+    if tmp.endswith("elv7_2"):
+        end = "elv7_2"
     elif tmp.endswith("eb"):
         end = "eb"
     return (arch, end)

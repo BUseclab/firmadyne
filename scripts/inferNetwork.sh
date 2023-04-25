@@ -18,29 +18,13 @@ if check_number $1; then
 fi
 IID=${1}
 
-if [ $# -gt 1 ]; then
-    if check_arch "${2}"; then
-        echo "Error: Invalid architecture!"
-        exit 1
-    fi
+arch=`${SCRIPT_DIR}/get_arch_version.py "${IID}" "${SCRATCH_DIR}" "${FS_OUT_DIR}" "${FS_SCRIPT_DIR}"`
 
-    ARCH=${2}
-else
-    echo -n "Querying database for architecture... "
-    ARCH=$(psql -d firmware -U firmadyne -h 127.0.0.1 -t -q -c "SELECT arch from image WHERE id=${1};")
-    ARCH="${ARCH#"${ARCH%%[![:space:]]*}"}"
-    echo "${ARCH}"
-    if [ -z "${ARCH}" ]; then
-        echo "Error: Unable to lookup architecture. Please specify {armel,mipseb,mipsel} as the second argument!"
-        exit 1
-    fi
-fi
-
-echo "Running firmware ${IID}: terminating after 60 secs..."
-timeout --preserve-status --signal SIGINT 60 "${SCRIPT_DIR}/run.${ARCH}.sh" "${IID}"
+echo "Running firmware ${IID} with arch ${arch}: terminating after 100 secs..."
+timeout --preserve-status --signal SIGINT 100 "${SCRIPT_DIR}/run.${arch}.sh" "${IID}"
 sleep 1
 
 echo "Inferring network..."
-"${SCRIPT_DIR}/makeNetwork.py" -i "${IID}" -q -o -a "${ARCH}" -S "${SCRATCH_DIR}"
+"${SCRIPT_DIR}/makeNetwork.py" -i "${IID}" -q -o -a "${arch}" -S "${SCRATCH_DIR}"
 
 echo "Done!"
