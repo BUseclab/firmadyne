@@ -1,3 +1,10 @@
+# FirmSolo - Firmadyne
+
+This is a modified version of the Firmadyne system to be compatible with the FirmSolo re-hosting framework.
+The file-system creation and emulation scripts are modified to support FirmSolo's kernels and kernel module loading.
+
+This version of Firmadyne is slightly older than the current upstream version, but it will updated in time.
+
 # Table of Contents
 
 - [Introduction](#introduction)
